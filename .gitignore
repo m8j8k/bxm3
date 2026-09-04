@@ -1,0 +1,8 @@
+
+# Local deploy/debug artifacts
+.bxm3.env
+.wrangler/
+deploy.log
+worker-check.json
+worker.js.bak
+worker.js.pre-vm-fallback
