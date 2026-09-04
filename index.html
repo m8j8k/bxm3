@@ -34,9 +34,10 @@
     font:400 17px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
     color:var(--fg);
     -webkit-font-smoothing:antialiased;
-    padding:
-      max(14px,env(safe-area-inset-top)) max(18px,env(safe-area-inset-right))
-      max(24px,env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-left));
+    /* Horizontal insets ride on the body; the vertical ones live on the
+       header and footer, so the standalone app is full-bleed under the
+       status bar and home indicator. Outside standalone every inset is 0. */
+    padding:0 max(18px,env(safe-area-inset-right)) 0 max(18px,env(safe-area-inset-left));
     max-width:520px;margin:0 auto;
     min-height:100vh;
     background:
@@ -45,7 +46,8 @@
     background-attachment:fixed;
   }
 
-  header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:6px 0 16px}
+  header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+    margin:6px 0 16px;padding-top:max(14px,env(safe-area-inset-top))}
   h1{font:600 22px/1.2 -apple-system,system-ui,sans-serif;letter-spacing:-.02em;margin:0}
   #updated{font-size:12.5px;color:var(--fg3);font-variant-numeric:tabular-nums;
     background:none;border:0;padding:6px 0;font-family:inherit;cursor:pointer}
@@ -97,6 +99,9 @@
   .eta .n.word{font-size:clamp(38px,12vw,52px);letter-spacing:-.03em}
   .eta .u{font:590 19px/1 -apple-system,system-ui,sans-serif;color:var(--fg2)}
   .prox{font-size:14.5px;color:var(--fg2);font-variant-numeric:tabular-nums}
+  /* quiet habit tag - a note, not a headline */
+  .usual{font:590 12.5px/1.3 -apple-system,system-ui,sans-serif;color:var(--bxm2);
+    margin:-2px 0 9px;letter-spacing:.01em}
   .chain{font-size:14px;color:var(--fg2);line-height:1.45;margin-top:12px;
     padding-top:12px;border-top:.5px solid var(--line)}
   .chain .muted{color:var(--fg3)}
@@ -136,7 +141,8 @@
     color:#ffcf7a;font-size:13.5px;line-height:1.4}
 
   /* footer */
-  footer{margin-top:26px;display:flex;align-items:center;justify-content:center;gap:14px}
+  footer{margin-top:26px;display:flex;align-items:center;justify-content:center;gap:14px;
+    padding-bottom:max(24px,env(safe-area-inset-bottom))}
   #shiftBtn{appearance:none;background:rgba(255,255,255,.07);border:.5px solid var(--line);
     color:var(--fg2);font:590 13px/1 -apple-system,system-ui,sans-serif;
     padding:9px 14px;border-radius:11px;cursor:pointer;display:flex;align-items:center;gap:7px}
@@ -233,6 +239,20 @@ const SHIFT_EXPIRES_MIN= 240;  // after this long past shift end, stop auto-driv
 const STALE_AFTER_MIN  = 2;    // snapshot older than this is called out as not-live
 const REFRESH_MS       = 30000;
 
+/* Which way she is pointed when no shift is set: the clock decides, so a
+   6:45 AM open lands on "to work" and a 4:10 PM open lands on "home"
+   with zero taps. A tap on the segmented control outranks the clock for
+   OVERRIDE_STICKY_MIN, then the clock takes back over. */
+const WORK_VIEW_FROM_HHMM = 400;   // 4:00 AM - work view starts here
+const WORK_VIEW_TO_HHMM   = 1200;  // 12:00 PM - home view from here until 4 AM
+const OVERRIDE_STICKY_MIN = 90;    // how long a tapped mode beats the clock
+
+/* Her habitual morning bus. With no shift set, the work view anchors on
+   the run closest to this instead of shoving her onto an earlier one. */
+const USUAL_AM_HHMM       = 705;   // the 7:05 out of Broadway / W 260 St
+const USUAL_AM_WINDOW_MIN = 25;    // only anchor on a bus within +/- this of it
+const USUAL_LATE_TAG_MIN  = 3;     // a live bus this far past 7:05 is called out
+
 const WORKER_URL = "https://bxm3.max-c2d.workers.dev";
 
 /* ─────────────────────────────────────────────────────────── state */
@@ -246,7 +266,17 @@ const store = {
   del(k) { try { localStorage.removeItem(k); } catch (e) {} },
 };
 
-let storedMode = (() => { const m = store.get("bxm3.mode", "work"); return m === "home" ? "home" : "work"; })();
+/*  bxm3.mode used to be a bare "work"/"home" string. Both shapes are read;
+    an old string counts as an ancient tap, so the clock rule takes over.  */
+function readModeTap() {
+  const raw = store.get("bxm3.mode", null);
+  if (typeof raw === "string") return { mode: raw === "home" ? "home" : "work", at: 0 };
+  if (!raw || typeof raw !== "object") return null;
+  const at = Number(raw.at);
+  return { mode: raw.mode === "home" ? "home" : "work", at: Number.isFinite(at) ? at : 0 };
+}
+
+let modeTap    = readModeTap();  // { mode, at } - her last manual tap, or null
 let shift      = normalizeShift(store.get("bxm3.shift", null));
 let override   = null;          // { mode, phase } - a manual tap beats the shift for this phase
 let showDiag   = false;
@@ -279,6 +309,23 @@ function durationText(ms) {
   return h ? h + "h " + (m % 60) + "m" : m + "m";
 }
 
+/* ─────────────────────────────────────────── which way she's pointed */
+/*  With no shift set the clock answers: mornings she is going to work,
+    afternoons and evenings she is going home. Her last tap outranks that
+    for OVERRIDE_STICKY_MIN, so an errand-day Home tap at 9 AM survives a
+    re-open at 10 but is gone by tomorrow morning.                       */
+function clockMode(now = Date.now()) {
+  const d = new Date(now);
+  const hhmm = d.getHours() * 100 + d.getMinutes();
+  return (hhmm >= WORK_VIEW_FROM_HHMM && hhmm < WORK_VIEW_TO_HHMM) ? "work" : "home";
+}
+
+function baseMode(now = Date.now()) {
+  if (modeTap && now >= modeTap.at && now - modeTap.at < OVERRIDE_STICKY_MIN * 60000)
+    return modeTap.mode;
+  return clockMode(now);
+}
+
 /* ───────────────────────────────────────────────────────── shift */
 function normalizeShift(s) {
   if (!s || typeof s !== "object") return null;
@@ -302,12 +349,12 @@ function shiftStartDate(s) {
       ret  - last hour of shift & after   -> ride-home plan (home)
     Past SHIFT_EXPIRES_MIN the shift stops steering anything.          */
 function phase() {
-  if (!shift) return { active:false, name:"none", mode:storedMode };
+  if (!shift) return { active:false, name:"none", mode:baseMode() };
   const start = shiftStartDate(shift).getTime();
   const end   = start + shift.hours * 3600e3;
   const now   = Date.now();
   if (now > end + SHIFT_EXPIRES_MIN * 60000)
-    return { active:false, name:"expired", mode:storedMode, start, end };
+    return { active:false, name:"expired", mode:baseMode(), start, end };
   if (now < start) return { active:true, name:"pre", mode:"work", start, end };
   if (now < end - RETURN_LEAD_MIN * 60000) return { active:true, name:"on", mode:"work", start, end };
   return { active:true, name:"ret", mode:"home", start, end };
@@ -315,7 +362,7 @@ function phase() {
 
 function effectiveMode() {
   const ph = phase();
-  if (!ph.active) return storedMode;
+  if (!ph.active) return baseMode();
   if (override && override.phase === ph.name) return override.mode;
   return ph.mode;
 }
@@ -357,6 +404,39 @@ function pick(cands) {
   return { kind:"none", c:null };
 }
 
+/*  Her 7:05. In the morning work view (no shift) the hero is whichever run
+    sits closest to it, so a 6:38 that is technically "next" never shoves
+    her out the door early - provided its leave-by has not already gone.
+    Nothing is anchored outside the window, so she never sees a stale or
+    unwinnable card; the plain next-bus pick takes over instead.          */
+const usualTargetMs = (now = Date.now()) => {
+  const d = new Date(now);
+  return new Date(d.getFullYear(), d.getMonth(), d.getDate(),
+                  Math.floor(USUAL_AM_HHMM / 100), USUAL_AM_HHMM % 100, 0, 0).getTime();
+};
+
+function usualPick(cands, now = Date.now()) {
+  const target = usualTargetMs(now);
+  const span   = USUAL_AM_WINDOW_MIN * 60000;
+  let best = null;
+  for (const c of cands) {
+    if (Math.abs(c.board - target) > span) continue;   // not her bus
+    if (c.leave <= now) continue;                      // leave-by already gone
+    if (!best || Math.abs(c.board - target) < Math.abs(best.board - target)) best = c;
+  }
+  return best ? { kind:"leave_by", c:best, usual:true } : null;
+}
+
+/*  Real-time honesty: if her 7:05 is reporting live at 7:12, the hero shows
+    7:12 and says so. Scheduled data never gets a lateness claim.         */
+function usualHTML(c, now = Date.now()) {
+  const target = usualTargetMs(now);
+  const lateBy = Math.round((c.board - target) / 60000);
+  const late   = !c.b.board_scheduled && lateBy >= USUAL_LATE_TAG_MIN;
+  return `<div class="usual">Your usual ${clockShort(target)}${
+    late ? ` · running ${minLabel(lateBy)} late` : ""}</div>`;
+}
+
 const verdictFor = (endT, deadline) =>
   (endT == null || deadline == null) ? null : Math.round((deadline - endT) / 60000);
 
@@ -381,12 +461,22 @@ function verdictHTML(spare, okWord, lateWord) {
     : `<div class="verdict late">${lateWord} ${minLabel(-spare)}</div>`;
 }
 
+/*  "BxM3 at 7:05 AM · 7 min at stop · 2 stops away" - the scheduled tag and
+    the live proximity are mutually exclusive, because only one is true.  */
+function proxLine(b) {
+  const atStop = minsUntil(b.board_time);
+  const bits = [`${esc(b.route)} at ${clock(b.board_time)}`];
+  if (atStop !== null && atStop >= 0) bits.push(minLabel(atStop) + " at stop");
+  if (b.board_scheduled) bits.push("scheduled");
+  else if (b.proximity) bits.push(esc(b.proximity));
+  return `<div class="prox">${bits.join(" · ")}</div>`;
+}
+
 /* Outbound: leave home -> board -> 78 St -> walk -> Lenox Hill */
 function outboundHero(sel, deadline) {
   const c = sel.c, b = c.b;
   const late = sel.kind === "leave_now";
   const spare = verdictFor(c.endT, deadline);
-  const atStop = minsUntil(b.board_time);
 
   const head = late
     ? `<div class="kicker urgent">Running late</div>
@@ -402,24 +492,22 @@ function outboundHero(sel, deadline) {
   return `<section class="card hero">
     <div class="top">${badge(b)}<span class="headsign">${esc(b.dest) || "&nbsp;"}</span>${statusChip(b)}</div>
     ${head}
-    <div class="prox">${esc(b.route)} at ${clock(b.board_time)}${
-      atStop !== null && atStop >= 0 ? ` · ${minLabel(atStop)} at stop` : ""}${
-      b.board_scheduled ? " · scheduled" : ""}</div>
+    ${sel.usual ? usualHTML(c) : ""}
+    ${proxLine(b)}
     <div class="chain">${chain}</div>
     ${deadline ? verdictHTML(spare, late ? "On time if you go now" : "On time", "Late by") : ""}
   </section>`;
 }
 
-/* Return: leave hospital -> board -> route target -> walk -> home */
-function returnHero(sel) {
+/* Return: leave Lenox Hill -> board -> route target -> walk -> home */
+function returnHero(sel, stopName) {
   const c = sel.c, b = c.b;
   const late = sel.kind === "leave_now";
-  const atStop = minsUntil(b.board_time);
 
   const head = late
-    ? `<div class="kicker urgent">Leaving now</div>
-       <div class="eta"><span class="n word">Head out</span></div>`
-    : `<div class="kicker">Leave the floor by</div>${bigTime(c.leave)}`;
+    ? `<div class="kicker urgent">Running late</div>
+       <div class="eta"><span class="n word">Leave now</span></div>`
+    : `<div class="kicker">Leave Lenox Hill by</div>${bigTime(c.leave)}`;
 
   const chain = c.targetT
     ? `Off at ${esc(b.target_label || "the stop")} ≈ <strong>${clock(c.targetT)}</strong>
@@ -430,11 +518,11 @@ function returnHero(sel) {
     <div class="top">${badge(b)}<span class="headsign">${esc(b.dest) || "&nbsp;"}</span>${statusChip(b)}</div>
     ${head}
     <div class="prox">${esc(b.route)} at ${clock(b.board_time)}${
-      atStop !== null && atStop >= 0 ? ` · ${minLabel(atStop)} at stop` : ""}${
+      stopName ? ` from ${esc(stopName)}` : ""} · ${minLabel(HOSPITAL_TO_BOARD_MIN)} walk${
       b.board_scheduled ? " · scheduled" : ""}</div>
     <div class="chain">${chain}</div>
     ${c.endT
-      ? `<div class="verdict ok">Home by ${clock(c.endT)}</div>`
+      ? `<div class="verdict ok">Home ≈ ${clock(c.endT)}</div>`
       : `<div class="verdict unknown">Home time unavailable for this bus</div>`}
   </section>`;
 }
@@ -447,9 +535,14 @@ function planRow(c, deadline, kind) {
     ? (spare === null ? `<div class="r">—</div>`
       : `<div class="r ${spare >= 0 ? "ok" : "late"}">${spare >= 0 ? "+" : "−"}${Math.abs(spare)}m</div>`)
     : `<div class="r">${c.endT ? clock(c.endT) : "—"}</div>`;
+  // With a shift deadline the right column is the spare, so the tail carries
+  // the Lenox Hill time. Without one the right column IS the Lenox Hill time,
+  // so the tail shows the bus's own drop-off instead of repeating it.
   const tail = kind === "return"
     ? (c.targetT ? "off " + clockShort(c.targetT) : "drop-off n/a")
-    : (c.endT ? "Lenox Hill " + clockShort(c.endT) : "arrival n/a");
+    : deadline
+      ? (c.endT ? "Lenox Hill " + clockShort(c.endT) : "arrival n/a")
+      : (c.targetT ? "E 78 St " + clockShort(c.targetT) : "arrival n/a");
   return `<div class="row">${badge(b)}
     <div class="mid">
       <div class="m1">Leave ${clock(c.leave)}${b.board_scheduled
@@ -458,42 +551,37 @@ function planRow(c, deadline, kind) {
     </div>${right}</div>`;
 }
 
-/* Plain (no shift) hero - the original transit-pass card */
-function plainHero(b) {
-  const m = minsUntil(b.board_time);
-  let big;
-  if (m === null) big = `<div class="eta"><span class="n word">${esc(b.proximity || "Tracking")}</span></div>`;
-  else if (m <= 0) big = `<div class="eta"><span class="n word">Now</span></div>`;
-  else if (m > 90) big = `<div class="eta"><span class="n word">Around ${esc(clock(b.board_time))}</span></div>`;
-  else big = `<div class="eta"><span class="n">${m}</span><span class="u">min</span></div>`;
+/*  Leave-by, always on. No shift set - or a shift phase she has tapped
+    away from - still leads with the door time, in whichever direction she
+    is pointed. Never a bare countdown: the countdown is not her question.
+    The morning work view anchors on her 7:05 first; everything else uses
+    the plain nearest-reachable-bus pick.                                 */
+function leaveByBody(d, m) {
+  const buses = d.buses || [];
 
-  const bits = [];
-  if (b.proximity) bits.push(esc(b.proximity));
-  if (b.stops_away !== null && b.stops_away !== undefined) bits.push(plural(b.stops_away, "stop") + " away");
-  if (b.vehicle) bits.push("Bus #" + esc(b.vehicle));
+  if (m === "home") {
+    const cands = candidates(buses, {
+      walkToStop: HOSPITAL_TO_BOARD_MIN,
+      walkFromTarget: b => b.route_key === "BXM2" ? BXM2_TARGET_TO_HOME_MIN : BOARD_TO_HOME_MIN,
+    });
+    const sel = pick(cands);
+    return sel.c
+      ? returnHero(sel, d.stop_name) +
+        (cands.length > 1 ? `<h2>Or catch</h2>` +
+          cands.filter(c => c !== sel.c).slice(0, 3).map(c => planRow(c, null, "return")).join("") : "")
+      : emptyHTML(d, cands.length ? "The next bus can no longer be reached on foot in time." : null);
+  }
 
-  const arrival = b.target_found && b.target_time
-    ? `<span class="val">${clock(b.target_time)}${b.target_scheduled ? " · sched" : ""}</span>`
-    : `<span class="val na">estimate unavailable</span>`;
-
-  return `<section class="card hero">
-    <div class="top">${badge(b)}<span class="headsign">${esc(b.dest) || "&nbsp;"}</span>${statusChip(b)}</div>
-    ${big}
-    <div class="prox">${bits.join(" · ") || "&nbsp;"}</div>
-    <div class="arrive"><span class="lbl">Arrives ${esc(b.target_label || "destination")}</span>${arrival}</div>
-  </section>`;
-}
-
-function plainRow(b) {
-  const m = minsUntil(b.board_time);
-  const head = m === null ? esc(b.proximity || "Tracking")
-    : m <= 0 ? "Now" : m > 90 ? "Around " + clock(b.board_time) : m + " min";
-  const sub = [b.proximity, b.vehicle ? "#" + b.vehicle : null].filter(Boolean).map(esc).join(" · ");
-  return `<div class="row">${badge(b)}
-    <div class="mid"><div class="m1">${head}${b.board_scheduled
-      ? ' <span style="color:var(--sched);font-size:12px;font-weight:400">sched</span>' : ""}</div>
-    <div class="m2">${sub || esc(b.dest)}</div></div>
-    <div class="r">${b.target_found && b.target_time ? clock(b.target_time) : "—"}</div></div>`;
+  const cands = candidates(buses, {
+    walkToStop: HOME_TO_BOARD_MIN,
+    walkFromTarget: () => BOARD_TO_HOSPITAL_MIN,
+  });
+  const sel = usualPick(cands) || pick(cands);
+  return sel.c
+    ? outboundHero(sel, null) +
+      (cands.length > 1 ? `<h2>Or catch</h2>` +
+        cands.filter(c => c !== sel.c).slice(0, 3).map(c => planRow(c, null, "outbound")).join("") : "")
+    : emptyHTML(d, cands.length ? "The next bus can no longer be reached on foot in time." : null);
 }
 
 const BUS_ICON = `<svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -540,7 +628,7 @@ function render(d) {
 
   $("title").textContent = ph.active && driving
     ? (ph.name === "pre" ? "Getting to work" : ph.name === "on" ? "On shift" : "Heading home")
-    : (m === "home" ? "Next bus home" : "Next bus to work");
+    : (m === "home" ? "Heading home" : "Getting to work");
 
   let body = "";
 
@@ -567,14 +655,12 @@ function render(d) {
     });
     const sel = pick(cands);
     body = sel.c
-      ? returnHero(sel) +
+      ? returnHero(sel, d.stop_name) +
         (cands.length > 1 ? `<h2>Or catch</h2>` +
           cands.filter(c => c !== sel.c).slice(0, 3).map(c => planRow(c, null, "return")).join("") : "")
       : emptyHTML(d);
   } else {
-    body = buses.length
-      ? plainHero(buses[0]) + (buses.length > 1 ? `<h2>Then</h2>` + buses.slice(1, 4).map(plainRow).join("") : "")
-      : emptyHTML(d);
+    body = leaveByBody(d, m);
   }
 
   out.innerHTML = body + ageNote(d);
@@ -643,9 +729,9 @@ seg.addEventListener("click", e => {
   if (!btn) return;
   const next = btn.dataset.mode;
   const ph = phase();
-  if (ph.active) override = { mode: next, phase: ph.name };   // manual beats the shift, this phase only
-  storedMode = next;
-  store.set("bxm3.mode", next);
+  if (ph.active) override = { mode: next, phase: ph.name };  // manual beats the shift, this phase only
+  modeTap = { mode: next, at: Date.now() };                  // and beats the clock for a while
+  store.set("bxm3.mode", modeTap);
   refreshNow();
 });
 
