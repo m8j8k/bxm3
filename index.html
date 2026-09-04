@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>BxM3</title>
+<style>
+  body{font:18px -apple-system,system-ui,sans-serif;margin:20px;background:#111;color:#eee}
+  h1{font-size:22px;margin:0 0 4px}
+  .sub{color:#888;font-size:14px;margin-bottom:18px}
+  .bus{background:#1e1e1e;border-radius:12px;padding:14px;margin-bottom:12px}
+  .big{font-size:34px;font-weight:700}
+  .dim{color:#aaa;font-size:15px}
+  .err{color:#f66}
+</style>
+<h1>BxM3 → Midtown</h1>
+<div class="sub">Broadway / W 260 St · <span id="upd">loading…</span></div>
+<div id="list"></div>
+<script>
+const WORKER_URL = "CHANGE_ME"; // e.g. https://bxm3.<your-subdomain>.workers.dev
+
+const mins = iso => iso ? Math.round((new Date(iso) - Date.now()) / 60000) : null;
+const clock = iso => new Date(iso).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
+
+async function tick() {
+  try {
+    const s = await (await fetch(WORKER_URL)).json();
+    document.getElementById("upd").textContent =
+      "updated " + (s.updated ? clock(s.updated) : "never");
+    const list = document.getElementById("list");
+    if (!s.buses.length) {
+      list.innerHTML = '<div class="bus">No buses tracked</div>' +
+        (s.error ? `<div class="err">${s.error}</div>` : "");
+      return;
+    }
+    list.innerHTML = s.buses.map(b => {
+      const m260 = mins(b.arrive_260), m78 = mins(b.arrive_78);
+      const top = m260 !== null ? `${m260} min` : b.proximity;
+      const sub = b.proximity + (b.stops_away !== null ? ` · ${b.stops_away} stops away` : "");
+      const eta = b.arrive_78 ? `78th St ≈ ${clock(b.arrive_78)} (${m78} min)` : "78th St ETA n/a";
+      return `<div class="bus"><div class="big">${top}</div>` +
+             `<div class="dim">${sub}</div><div class="dim">${eta}</div>` +
+             `<div class="dim">bus #${b.vehicle} → ${b.dest}</div></div>`;
+    }).join("");
+  } catch (e) {
+    document.getElementById("upd").textContent = "fetch failed";
+  }
+}
+tick();
+setInterval(tick, 30000);
+</script>
+</html>
