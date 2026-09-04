@@ -19,6 +19,7 @@
 <script>
 const WORKER_URL = "https://bxm3.max-c2d.workers.dev"; // e.g. https://bxm3.<your-subdomain>.workers.dev
 
+const sched0 = b => b.arrive_260_scheduled ? " (sched)" : "";
 const mins = iso => iso ? Math.round((new Date(iso) - Date.now()) / 60000) : null;
 const clock = iso => new Date(iso).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
 
@@ -35,9 +36,12 @@ async function tick() {
     }
     list.innerHTML = s.buses.map(b => {
       const m260 = mins(b.arrive_260), m78 = mins(b.arrive_78);
-      const top = m260 !== null ? `${m260} min` : b.proximity;
+      const top = m260 !== null ? `${m260} min${sched0(b)}` : b.proximity;
       const sub = b.proximity + (b.stops_away !== null ? ` · ${b.stops_away} stops away` : "");
-      const eta = b.arrive_78 ? `78th St ≈ ${clock(b.arrive_78)} (${m78} min)` : "78th St ETA n/a";
+      const sched = k => b[k] ? " (scheduled)" : "";
+      const eta = b.arrive_78
+        ? `78th St ≈ ${clock(b.arrive_78)} (${m78} min)${sched("arrive_78_scheduled")}`
+        : "78th St ETA n/a";
       return `<div class="bus"><div class="big">${top}</div>` +
              `<div class="dim">${sub}</div><div class="dim">${eta}</div>` +
              `<div class="dim">bus #${b.vehicle} → ${b.dest}</div></div>`;
