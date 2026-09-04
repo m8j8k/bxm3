@@ -7,9 +7,12 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Bus">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon.png">
 <title>Emily's Bus</title>
 <style>
   :root{
+    color-scheme:dark;
     --bg:#000;
     --card:rgba(255,255,255,.055);
     --card-hi:rgba(255,255,255,.085);
@@ -21,10 +24,11 @@
     --bxm2:#F7A6CE;
     --live:#32d74b;
     --sched:#ffb020;
+    --late:#ff6b6b;
     --radius:20px;
   }
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
-  button,h1,h2,.badge,.seg{-webkit-user-select:none;user-select:none}
+  button,h1,h2,h3,.badge,.seg,.kicker,.chip{-webkit-user-select:none;user-select:none}
   html,body{margin:0;background:var(--bg)}
   body{
     font:400 17px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
@@ -68,7 +72,7 @@
   .badge{font:700 13px/1 -apple-system,system-ui,sans-serif;letter-spacing:.02em;
     padding:6px 9px;border-radius:8px;color:#fff;flex:none}
   .badge.bxm3{background:var(--bxm3)}
-  .badge.bxm2{background:var(--bxm2)}
+  .badge.bxm2{background:var(--bxm2);color:#2a0f1d}
   .status{margin-left:auto;display:flex;align-items:center;gap:5px;
     font-size:12px;font-weight:590;color:var(--fg3);flex:none}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--live)}
@@ -82,11 +86,26 @@
   .headsign{font-size:14px;color:var(--fg2);line-height:1.3;
     display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 
+  .kicker{font:590 12.5px/1 -apple-system,system-ui,sans-serif;color:var(--fg3);
+    text-transform:uppercase;letter-spacing:.08em;margin-bottom:8px}
+  .kicker.urgent{color:var(--late)}
+
   .eta{display:flex;align-items:baseline;gap:8px;margin:2px 0 6px}
   .eta .n{font:700 clamp(58px,19vw,80px)/.92 -apple-system,system-ui,sans-serif;
     letter-spacing:-.045em;font-variant-numeric:tabular-nums}
+  .eta .n.time{font-size:clamp(46px,15vw,64px)}
+  .eta .n.word{font-size:clamp(38px,12vw,52px);letter-spacing:-.03em}
   .eta .u{font:590 19px/1 -apple-system,system-ui,sans-serif;color:var(--fg2)}
   .prox{font-size:14.5px;color:var(--fg2);font-variant-numeric:tabular-nums}
+  .chain{font-size:14px;color:var(--fg2);line-height:1.45;margin-top:12px;
+    padding-top:12px;border-top:.5px solid var(--line)}
+  .chain .muted{color:var(--fg3)}
+
+  .verdict{margin-top:12px;display:flex;align-items:center;gap:7px;
+    font:600 15px/1.3 -apple-system,system-ui,sans-serif}
+  .verdict.ok{color:var(--live)}
+  .verdict.late{color:var(--late)}
+  .verdict.unknown{color:var(--fg3);font-weight:400;font-size:14px}
 
   .arrive{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
     margin-top:16px;padding-top:14px;border-top:.5px solid var(--line)}
@@ -104,6 +123,8 @@
   .row .m1{font:600 16px/1.25 -apple-system,system-ui,sans-serif;font-variant-numeric:tabular-nums}
   .row .m2{font-size:12.5px;color:var(--fg3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .row .r{font-size:13px;color:var(--fg2);font-variant-numeric:tabular-nums;text-align:right;flex:none}
+  .row .r.ok{color:var(--live)}
+  .row .r.late{color:var(--late)}
 
   /* empty / error */
   .empty{text-align:center;padding:44px 22px}
@@ -112,14 +133,51 @@
   .empty .s{font-size:14.5px;color:var(--fg3);line-height:1.45}
   .note{margin-top:10px;padding:11px 14px;border-radius:12px;
     background:rgba(255,176,32,.10);border:.5px solid rgba(255,176,32,.22);
-    color:#ffcf7a;font-size:13.5px}
+    color:#ffcf7a;font-size:13.5px;line-height:1.4}
 
-  footer{margin-top:26px;text-align:center}
+  /* footer */
+  footer{margin-top:26px;display:flex;align-items:center;justify-content:center;gap:14px}
+  #shiftBtn{appearance:none;background:rgba(255,255,255,.07);border:.5px solid var(--line);
+    color:var(--fg2);font:590 13px/1 -apple-system,system-ui,sans-serif;
+    padding:9px 14px;border-radius:11px;cursor:pointer;display:flex;align-items:center;gap:7px}
+  #shiftBtn .pip{width:6px;height:6px;border-radius:50%;background:var(--bxm3);display:none}
+  #shiftBtn.set .pip{display:block}
+  #shiftBtn.set{color:var(--fg)}
   #diag{font:400 11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
     color:rgba(235,235,245,.2);background:none;border:0;padding:8px;
     cursor:pointer;font-variant-numeric:tabular-nums}
-  .stale body,body.stale{opacity:1}
   body.stale .card,body.stale .row{opacity:.5;transition:opacity .3s}
+
+  /* shift sheet */
+  /* An author display rule beats the UA [hidden] rule, so restate it. */
+  .sheet[hidden]{display:none}
+  .sheet{position:fixed;inset:0;z-index:50;display:flex;align-items:flex-end;justify-content:center;
+    background:rgba(0,0,0,.6);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px)}
+  .sheet-card{width:100%;max-width:520px;background:#0d0d0f;
+    border:.5px solid var(--line);border-radius:24px 24px 0 0;
+    padding:22px 20px calc(22px + env(safe-area-inset-bottom));
+    animation:rise .3s cubic-bezier(.32,.72,0,1)}
+  @media (prefers-reduced-motion:reduce){.sheet-card{animation:none}}
+  @keyframes rise{from{transform:translateY(16px);opacity:.6}to{transform:none;opacity:1}}
+  .sheet h3{font:600 18px/1 -apple-system,system-ui,sans-serif;margin:0 0 4px}
+  .sheet .sub{font-size:13.5px;color:var(--fg3);margin-bottom:18px}
+  .field{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:13px 0;border-bottom:.5px solid var(--line)}
+  .field label{font-size:15.5px;color:var(--fg2)}
+  .field input{background:rgba(255,255,255,.08);border:.5px solid var(--line);
+    color:var(--fg);font:500 16px/1 -apple-system,system-ui,sans-serif;
+    padding:9px 11px;border-radius:10px;font-variant-numeric:tabular-nums}
+  .chips{display:flex;gap:8px;padding:16px 0 4px}
+  .chip{flex:1;appearance:none;background:rgba(255,255,255,.07);border:.5px solid var(--line);
+    color:var(--fg2);font:590 15px/1 -apple-system,system-ui,sans-serif;
+    padding:12px 8px;border-radius:12px;cursor:pointer}
+  .chip[aria-pressed="true"]{background:var(--bxm3);border-color:var(--bxm3);color:#fff}
+  .sheet-actions{display:flex;gap:10px;margin-top:20px}
+  .sheet-actions button{flex:1;appearance:none;border:.5px solid var(--line);
+    background:rgba(255,255,255,.07);color:var(--fg);
+    font:600 16px/1 -apple-system,system-ui,sans-serif;padding:15px;border-radius:14px;cursor:pointer}
+  .sheet-actions .primary{background:var(--bxm3);border-color:var(--bxm3);color:#fff}
+  .sheet-actions .ghost{color:var(--fg3)}
 </style>
 </head>
 <body>
@@ -136,80 +194,306 @@
 
 <main id="out" aria-live="polite"></main>
 
-<footer><button id="diag" type="button">·</button></footer>
+<footer>
+  <button id="shiftBtn" type="button"><span class="pip"></span><span id="shiftLabel">Shift</span></button>
+  <button id="diag" type="button">·</button>
+</footer>
+
+<div class="sheet" id="sheet" role="dialog" aria-modal="true" aria-label="Shift" hidden>
+  <div class="sheet-card">
+    <h3>Your shift</h3>
+    <div class="sub">Sets the leave-by time and flips the app home when you're out.</div>
+    <div class="field"><label for="sh-date">Date</label><input type="date" id="sh-date"></div>
+    <div class="field"><label for="sh-time">Start</label><input type="time" id="sh-time"></div>
+    <div class="chips" id="sh-hours"></div>
+    <div class="sheet-actions">
+      <button type="button" class="ghost" id="sh-clear">Clear</button>
+      <button type="button" class="primary" id="sh-save">Save</button>
+    </div>
+  </div>
+</div>
 
 <script>
+/* ═══════════════════════════════════════════════════════════════════
+   TUNABLE COMMUTE GEOMETRY  —  all estimates in minutes, edit freely.
+   These are walking/margin guesses, not measured times.
+   ═══════════════════════════════════════════════════════════════════ */
+const HOME_TO_BOARD_MIN       = 4;   // door -> Broadway/W 260 St stop
+const BOARD_TO_HOSPITAL_MIN   = 6;   // 5 Av/E 78 St stop -> Lenox Hill
+const HOSPITAL_TO_BOARD_MIN   = 6;   // Lenox Hill -> Madison Av/E 80 St stop
+const BOARD_TO_HOME_MIN       = 4;   // Broadway/W 260 St (Yonkers side) -> door  [BxM3 only]
+const BXM2_TARGET_TO_HOME_MIN = 6;   // Riverdale Av/W 259-263 St -> door  [BxM2; not in spec, estimate]
+const BUFFER_MIN              = 3;   // safety margin baked into leave-by
+const DEFAULT_SHIFT_HOURS     = 12;  // nurse shift default
+const SHIFT_HOUR_CHOICES      = [8, 10, 12];
+
+/* Behaviour knobs */
+const RETURN_LEAD_MIN  = 60;   // flip to the ride-home plan this long before shift end
+const SHIFT_EXPIRES_MIN= 240;  // after this long past shift end, stop auto-driving the mode
+const STALE_AFTER_MIN  = 2;    // snapshot older than this is called out as not-live
+const REFRESH_MS       = 30000;
+
 const WORKER_URL = "https://bxm3.max-c2d.workers.dev";
-const REFRESH_MS = 30000;
 
-const seg = document.getElementById("seg");
-const out = document.getElementById("out");
-const diagEl = document.getElementById("diag");
-const updatedEl = document.getElementById("updated");
+/* ─────────────────────────────────────────────────────────── state */
+const $ = id => document.getElementById(id);
+const seg = $("seg"), out = $("out"), diagEl = $("diag"), updatedEl = $("updated");
+const sheet = $("sheet"), shiftBtn = $("shiftBtn"), shiftLabel = $("shiftLabel");
 
-let mode = "work";
-try { const m = localStorage.getItem("bxm3.mode"); if (m === "work" || m === "home") mode = m; } catch (e) {}
+const store = {
+  get(k, fallback) { try { const v = localStorage.getItem(k); return v === null ? fallback : JSON.parse(v); } catch (e) { return fallback; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} },
+  del(k) { try { localStorage.removeItem(k); } catch (e) {} },
+};
 
-let showDiag = false;
-let timer = null;
-let inflight = 0;
+let storedMode = (() => { const m = store.get("bxm3.mode", "work"); return m === "home" ? "home" : "work"; })();
+let shift      = normalizeShift(store.get("bxm3.shift", null));
+let override   = null;          // { mode, phase } - a manual tap beats the shift for this phase
+let showDiag   = false;
+let offline    = false;
+let timer = null, inflight = 0, lastData = null;
 
+/* ─────────────────────────────────────────────────────── utilities */
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
   ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
-const clock = iso => new Date(iso).toLocaleTimeString([], { hour:"numeric", minute:"2-digit" });
-const mins  = iso => iso ? Math.round((new Date(iso) - Date.now()) / 60000) : null;
 
-// Headline for a boarding time: "Now" under a minute, minutes up to 90, else a clock time.
-function etaParts(b) {
-  const m = mins(b.board_time);
-  if (m === null) return { n: null, u: "", alt: b.proximity || "Tracking" };
-  if (m <= 0) return { n: "Now", u: "" };
-  if (m > 90) return { n: null, u: "", alt: "Around " + clock(b.board_time) };
-  return { n: String(m), u: m === 1 ? "min" : "min" };
+const clock = t => t == null ? "" :
+  new Date(t).toLocaleTimeString([], { hour:"numeric", minute:"2-digit" });
+
+// Compact form for dense rows, where AM/PM is obvious from context.
+const clockShort = t => t == null ? "" : clockParts(t).t;
+
+// Split "6:52 AM" so the meridiem can ride small next to a big number.
+function clockParts(t) {
+  const s = clock(t), m = s.match(/^(.*?)\s*([AP]M)$/i);
+  return m ? { t: m[1], ap: m[2] } : { t: s, ap: "" };
 }
 
+const minsUntil = t => t == null ? null : Math.round((new Date(t).getTime() - Date.now()) / 60000);
+const plural = (n, w) => n + " " + w + (Math.abs(n) === 1 ? "" : "s");
+const minLabel = n => n + " min";          // abbreviation: never "mins"
+
+function durationText(ms) {
+  const m = Math.max(0, Math.round(ms / 60000));
+  const h = Math.floor(m / 60);
+  return h ? h + "h " + (m % 60) + "m" : m + "m";
+}
+
+/* ───────────────────────────────────────────────────────── shift */
+function normalizeShift(s) {
+  if (!s || typeof s !== "object") return null;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s.date || "")) return null;
+  if (!/^\d{2}:\d{2}$/.test(s.start || "")) return null;
+  const hours = Number(s.hours);
+  if (!Number.isFinite(hours) || hours <= 0 || hours > 24) return null;
+  return { date: s.date, start: s.start, hours };
+}
+
+// Local-time Date from the stored y-m-d + h:m (never UTC-parsed).
+function shiftStartDate(s) {
+  const [y, mo, d] = s.date.split("-").map(Number);
+  const [h, mi] = s.start.split(":").map(Number);
+  return new Date(y, mo - 1, d, h, mi, 0, 0);
+}
+
+/*  Phase drives which mode the app shows on its own:
+      pre  - before shift start           -> outbound leave-by plan (work)
+      on   - working, end still far off   -> calm "on shift" card
+      ret  - last hour of shift & after   -> ride-home plan (home)
+    Past SHIFT_EXPIRES_MIN the shift stops steering anything.          */
+function phase() {
+  if (!shift) return { active:false, name:"none", mode:storedMode };
+  const start = shiftStartDate(shift).getTime();
+  const end   = start + shift.hours * 3600e3;
+  const now   = Date.now();
+  if (now > end + SHIFT_EXPIRES_MIN * 60000)
+    return { active:false, name:"expired", mode:storedMode, start, end };
+  if (now < start) return { active:true, name:"pre", mode:"work", start, end };
+  if (now < end - RETURN_LEAD_MIN * 60000) return { active:true, name:"on", mode:"work", start, end };
+  return { active:true, name:"ret", mode:"home", start, end };
+}
+
+function effectiveMode() {
+  const ph = phase();
+  if (!ph.active) return storedMode;
+  if (override && override.phase === ph.name) return override.mode;
+  return ph.mode;
+}
+
+/* ──────────────────────────────────────────────────── planning */
+/*  A candidate is one bus with every derived time attached. Nothing is
+    invented: if the worker gave us no target_time we carry null through
+    and the UI says so rather than guessing an arrival.                */
+function candidates(buses, { walkToStop, walkFromTarget }) {
+  const now = Date.now();
+  return (buses || [])
+    .filter(b => b.board_time)
+    .map(b => {
+      const board  = new Date(b.board_time).getTime();
+      const targetT = (b.target_found && b.target_time) ? new Date(b.target_time).getTime() : null;
+      const walkOff = walkFromTarget(b);
+      return {
+        b,
+        board,
+        leave:       board - (walkToStop + BUFFER_MIN) * 60000,  // comfortable door time
+        latestLeave: board - walkToStop * 60000,                 // absolute latest door time
+        targetT,
+        endT: targetT == null ? null : targetT + walkOff * 60000,
+        walkOff,
+      };
+    })
+    .filter(c => c.board > now - 60000)
+    .sort((a, z) => a.board - z.board);
+}
+
+/*  Walk the buses in time order and take the first one still physically
+    reachable on foot. If its comfortable leave time has already slipped
+    past, that is the "running late" case - we do NOT quietly skip ahead
+    to a later bus, because she can still make this one.                */
+function pick(cands) {
+  const now = Date.now();
+  for (const c of cands)
+    if (c.latestLeave > now) return { kind: c.leave > now ? "leave_by" : "leave_now", c };
+  return { kind:"none", c:null };
+}
+
+const verdictFor = (endT, deadline) =>
+  (endT == null || deadline == null) ? null : Math.round((deadline - endT) / 60000);
+
+/* ────────────────────────────────────────────────────── rendering */
 const badge = b => `<span class="badge ${b.route_key === "BXM2" ? "bxm2" : "bxm3"}">${esc(b.route)}</span>`;
 
-function heroHTML(b) {
-  const e = etaParts(b);
-  const big = e.n !== null
-    ? `<div class="eta"><span class="n">${esc(e.n)}</span>${e.u ? `<span class="u">${e.u}</span>` : ""}</div>`
-    : `<div class="eta"><span class="n" style="font-size:34px;letter-spacing:-.02em">${esc(e.alt)}</span></div>`;
+const statusChip = b => `<span class="status ${b.board_scheduled ? "sched" : ""}">
+  <span class="dot"></span>${b.board_scheduled ? "Scheduled" : "Live"}</span>`;
+
+function bigTime(t, cls) {
+  const p = clockParts(t);
+  return `<div class="eta"><span class="n ${cls || "time"}">${esc(p.t)}</span>` +
+         (p.ap ? `<span class="u">${esc(p.ap)}</span>` : "") + `</div>`;
+}
+
+// "On time · 17 min to spare" / "Late by 12 min" / honest unknown.
+function verdictHTML(spare, okWord, lateWord) {
+  if (spare === null)
+    return `<div class="verdict unknown">Arrival estimate unavailable for this bus</div>`;
+  return spare >= 0
+    ? `<div class="verdict ok">${okWord} · ${minLabel(spare)} to spare</div>`
+    : `<div class="verdict late">${lateWord} ${minLabel(-spare)}</div>`;
+}
+
+/* Outbound: leave home -> board -> 78 St -> walk -> Lenox Hill */
+function outboundHero(sel, deadline) {
+  const c = sel.c, b = c.b;
+  const late = sel.kind === "leave_now";
+  const spare = verdictFor(c.endT, deadline);
+  const atStop = minsUntil(b.board_time);
+
+  const head = late
+    ? `<div class="kicker urgent">Running late</div>
+       <div class="eta"><span class="n word">Leave now</span></div>`
+    : `<div class="kicker">Leave by</div>${bigTime(c.leave)}`;
+
+  const chain = c.targetT
+    ? `Arrive ${esc(b.target_label || "the stop")} ≈ <strong>${clock(c.targetT)}</strong>
+       <span class="muted">· walk ${c.walkOff} min →</span> Lenox Hill ≈ <strong>${clock(c.endT)}</strong>`
+    : `<span class="muted">No arrival estimate on this bus yet — the ${esc(b.route)} is tracked,
+       but MTA has not published its ${esc(b.target_label || "destination")} time.</span>`;
+
+  return `<section class="card hero">
+    <div class="top">${badge(b)}<span class="headsign">${esc(b.dest) || "&nbsp;"}</span>${statusChip(b)}</div>
+    ${head}
+    <div class="prox">${esc(b.route)} at ${clock(b.board_time)}${
+      atStop !== null && atStop >= 0 ? ` · ${minLabel(atStop)} at stop` : ""}${
+      b.board_scheduled ? " · scheduled" : ""}</div>
+    <div class="chain">${chain}</div>
+    ${deadline ? verdictHTML(spare, late ? "On time if you go now" : "On time", "Late by") : ""}
+  </section>`;
+}
+
+/* Return: leave hospital -> board -> route target -> walk -> home */
+function returnHero(sel) {
+  const c = sel.c, b = c.b;
+  const late = sel.kind === "leave_now";
+  const atStop = minsUntil(b.board_time);
+
+  const head = late
+    ? `<div class="kicker urgent">Leaving now</div>
+       <div class="eta"><span class="n word">Head out</span></div>`
+    : `<div class="kicker">Leave the floor by</div>${bigTime(c.leave)}`;
+
+  const chain = c.targetT
+    ? `Off at ${esc(b.target_label || "the stop")} ≈ <strong>${clock(c.targetT)}</strong>
+       <span class="muted">· walk ${c.walkOff} min</span>`
+    : `<span class="muted">No drop-off estimate published for this ${esc(b.route)} yet.</span>`;
+
+  return `<section class="card hero">
+    <div class="top">${badge(b)}<span class="headsign">${esc(b.dest) || "&nbsp;"}</span>${statusChip(b)}</div>
+    ${head}
+    <div class="prox">${esc(b.route)} at ${clock(b.board_time)}${
+      atStop !== null && atStop >= 0 ? ` · ${minLabel(atStop)} at stop` : ""}${
+      b.board_scheduled ? " · scheduled" : ""}</div>
+    <div class="chain">${chain}</div>
+    ${c.endT
+      ? `<div class="verdict ok">Home by ${clock(c.endT)}</div>`
+      : `<div class="verdict unknown">Home time unavailable for this bus</div>`}
+  </section>`;
+}
+
+/* Alternatives under the hero, each with its own leave time + verdict */
+function planRow(c, deadline, kind) {
+  const b = c.b;
+  const spare = verdictFor(c.endT, deadline);
+  const right = deadline
+    ? (spare === null ? `<div class="r">—</div>`
+      : `<div class="r ${spare >= 0 ? "ok" : "late"}">${spare >= 0 ? "+" : "−"}${Math.abs(spare)}m</div>`)
+    : `<div class="r">${c.endT ? clock(c.endT) : "—"}</div>`;
+  const tail = kind === "return"
+    ? (c.targetT ? "off " + clockShort(c.targetT) : "drop-off n/a")
+    : (c.endT ? "Lenox Hill " + clockShort(c.endT) : "arrival n/a");
+  return `<div class="row">${badge(b)}
+    <div class="mid">
+      <div class="m1">Leave ${clock(c.leave)}${b.board_scheduled
+        ? ' <span style="color:var(--sched);font-size:12px;font-weight:400">sched</span>' : ""}</div>
+      <div class="m2">${esc(b.route)} ${clockShort(b.board_time)} · ${esc(tail)}</div>
+    </div>${right}</div>`;
+}
+
+/* Plain (no shift) hero - the original transit-pass card */
+function plainHero(b) {
+  const m = minsUntil(b.board_time);
+  let big;
+  if (m === null) big = `<div class="eta"><span class="n word">${esc(b.proximity || "Tracking")}</span></div>`;
+  else if (m <= 0) big = `<div class="eta"><span class="n word">Now</span></div>`;
+  else if (m > 90) big = `<div class="eta"><span class="n word">Around ${esc(clock(b.board_time))}</span></div>`;
+  else big = `<div class="eta"><span class="n">${m}</span><span class="u">min</span></div>`;
 
   const bits = [];
   if (b.proximity) bits.push(esc(b.proximity));
-  if (b.stops_away !== null && b.stops_away !== undefined)
-    bits.push(b.stops_away === 1 ? "1 stop away" : b.stops_away + " stops away");
+  if (b.stops_away !== null && b.stops_away !== undefined) bits.push(plural(b.stops_away, "stop") + " away");
   if (b.vehicle) bits.push("Bus #" + esc(b.vehicle));
 
-  const sched = b.board_scheduled;
   const arrival = b.target_found && b.target_time
     ? `<span class="val">${clock(b.target_time)}${b.target_scheduled ? " · sched" : ""}</span>`
     : `<span class="val na">estimate unavailable</span>`;
 
   return `<section class="card hero">
-    <div class="top">${badge(b)}
-      <span class="headsign">${esc(b.dest) || "&nbsp;"}</span>
-      <span class="status ${sched ? "sched" : ""}"><span class="dot"></span>${sched ? "Scheduled" : "Live"}</span>
-    </div>
+    <div class="top">${badge(b)}<span class="headsign">${esc(b.dest) || "&nbsp;"}</span>${statusChip(b)}</div>
     ${big}
     <div class="prox">${bits.join(" · ") || "&nbsp;"}</div>
-    <div class="arrive">
-      <span class="lbl">Arrives ${esc(b.target_label || "destination")}</span>
-      ${arrival}
-    </div>
+    <div class="arrive"><span class="lbl">Arrives ${esc(b.target_label || "destination")}</span>${arrival}</div>
   </section>`;
 }
 
-function rowHTML(b) {
-  const e = etaParts(b);
-  const head = e.n !== null ? `${esc(e.n)}${e.u ? " " + e.u : ""}` : esc(e.alt);
+function plainRow(b) {
+  const m = minsUntil(b.board_time);
+  const head = m === null ? esc(b.proximity || "Tracking")
+    : m <= 0 ? "Now" : m > 90 ? "Around " + clock(b.board_time) : m + " min";
   const sub = [b.proximity, b.vehicle ? "#" + b.vehicle : null].filter(Boolean).map(esc).join(" · ");
-  const right = b.target_found && b.target_time ? clock(b.target_time) : "—";
   return `<div class="row">${badge(b)}
-    <div class="mid"><div class="m1">${head}${b.board_scheduled ? ' <span style="color:var(--sched);font-size:12px;font-weight:400">sched</span>' : ""}</div>
+    <div class="mid"><div class="m1">${head}${b.board_scheduled
+      ? ' <span style="color:var(--sched);font-size:12px;font-weight:400">sched</span>' : ""}</div>
     <div class="m2">${sub || esc(b.dest)}</div></div>
-    <div class="r">${right}</div></div>`;
+    <div class="r">${b.target_found && b.target_time ? clock(b.target_time) : "—"}</div></div>`;
 }
 
 const BUS_ICON = `<svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -218,81 +502,220 @@ const BUS_ICON = `<svg width="46" height="46" viewBox="0 0 24 24" fill="none" st
   <path d="M3 16h18"/><circle cx="7.5" cy="18.5" r="1.5"/><circle cx="16.5" cy="18.5" r="1.5"/>
   <path d="M6 7h5"/></svg>`;
 
-function emptyHTML(d) {
-  const routes = (d.routes || []).join(" or ");
+function emptyHTML(d, extra) {
+  const routes = (d.routes || []).join(" or ") || "bus";
   return `<section class="card empty">${BUS_ICON}
     <div class="t">No ${esc(routes)} tracked right now</div>
-    <div class="s">Nothing is reporting live at ${esc(d.stop_name || "your stop")}.<br>
-    Checking again every ${REFRESH_MS / 1000} seconds.</div>
+    <div class="s">${extra || `Nothing is reporting live at ${esc(d.stop_name || "your stop")}.`}<br>
+      Checking again every ${REFRESH_MS / 1000} seconds.</div>
     ${d.error ? `<div class="note">${esc(d.error)}</div>` : ""}
   </section>`;
 }
 
+function onShiftHTML(ph) {
+  const left = ph.end - Date.now();
+  return `<section class="card hero">
+    <div class="kicker">On shift</div>
+    ${bigTime(ph.end)}
+    <div class="prox">${durationText(left)} to go</div>
+    <div class="chain"><span class="muted">Your ride home appears here
+      ${RETURN_LEAD_MIN} minutes before you're out. Tap Home any time to look early.</span></div>
+  </section>`;
+}
+
+function ageNote(d) {
+  if (!d || !d.updated) return "";
+  const age = Math.round((Date.now() - new Date(d.updated).getTime()) / 60000);
+  if (!offline && age < STALE_AFTER_MIN) return "";
+  return `<div class="note">Showing your last snapshot from ${clock(d.updated)}${
+    age >= 1 ? ` · ${minLabel(age)} old` : ""}. ${
+    offline ? "No connection right now." : "Reconnecting…"}</div>`;
+}
+
 function render(d) {
-  document.getElementById("title").textContent =
-    d.mode === "home" ? "Next bus home" : "Next bus to work";
-
+  const ph = phase();
+  const m = effectiveMode();
   const buses = d.buses || [];
-  out.innerHTML = buses.length
-    ? heroHTML(buses[0]) +
-      (buses.length > 1
-        ? `<h2>Then</h2>` + buses.slice(1, 4).map(rowHTML).join("")
-        : "")
-    : emptyHTML(d);
+  const driving = ph.active && !(override && override.phase === ph.name);
 
-  updatedEl.textContent = d.updated ? "updated " + clock(d.updated) : "no data";
+  $("title").textContent = ph.active && driving
+    ? (ph.name === "pre" ? "Getting to work" : ph.name === "on" ? "On shift" : "Heading home")
+    : (m === "home" ? "Next bus home" : "Next bus to work");
+
+  let body = "";
+
+  if (driving && ph.name === "on") {
+    body = onShiftHTML(ph);
+  } else if (driving && ph.name === "pre" && m === "work") {
+    const cands = candidates(buses, { walkToStop: HOME_TO_BOARD_MIN, walkFromTarget: () => BOARD_TO_HOSPITAL_MIN });
+    const sel = pick(cands);
+    const deadline = ph.start;
+    body = sel.c
+      ? outboundHero(sel, deadline) +
+        (cands.length > 1 ? `<h2>Or catch</h2>` +
+          cands.filter(c => c !== sel.c).slice(0, 3).map(c => planRow(c, deadline, "outbound")).join("") : "")
+      : emptyHTML(d, cands.length
+          ? "The next bus can no longer be reached on foot in time."
+          : minsUntil(deadline) > 90
+            ? `Your leave-by time appears here once buses start reporting for the
+               ${clock(deadline)} shift.`
+            : `Nothing is reporting live at ${esc(d.stop_name || "your stop")}.`);
+  } else if (driving && ph.name === "ret" && m === "home") {
+    const cands = candidates(buses, {
+      walkToStop: HOSPITAL_TO_BOARD_MIN,
+      walkFromTarget: b => b.route_key === "BXM2" ? BXM2_TARGET_TO_HOME_MIN : BOARD_TO_HOME_MIN,
+    });
+    const sel = pick(cands);
+    body = sel.c
+      ? returnHero(sel) +
+        (cands.length > 1 ? `<h2>Or catch</h2>` +
+          cands.filter(c => c !== sel.c).slice(0, 3).map(c => planRow(c, null, "return")).join("") : "")
+      : emptyHTML(d);
+  } else {
+    body = buses.length
+      ? plainHero(buses[0]) + (buses.length > 1 ? `<h2>Then</h2>` + buses.slice(1, 4).map(plainRow).join("") : "")
+      : emptyHTML(d);
+  }
+
+  out.innerHTML = body + ageNote(d);
+
+  updatedEl.textContent = offline ? "offline" : d.updated ? "updated " + clock(d.updated) : "no data";
+  seg.dataset.mode = m;
+  for (const btn of seg.querySelectorAll("button"))
+    btn.setAttribute("aria-selected", String(btn.dataset.mode === m));
 
   const g = d.diagnostics || {};
   diagEl.textContent = showDiag
     ? `mode=${d.mode} stop=${d.stop} visits=${g.raw_visit_count ?? "-"} ` +
-      `vehicles=${g.raw_vehicle_count ?? "-"} src=${d.source ?? "-"}`
+      `vehicles=${g.raw_vehicle_count ?? "-"} src=${d.source ?? "-"} phase=${ph.name}`
     : "·";
+
+  paintShiftButton();
 }
 
+function paintShiftButton() {
+  if (!shift) { shiftBtn.classList.remove("set"); shiftLabel.textContent = "Set shift"; return; }
+  const ph = phase();
+  shiftBtn.classList.add("set");
+  const start = shiftStartDate(shift);
+  const today = new Date(); today.setHours(0,0,0,0);
+  const sameDay = start >= today && start < new Date(today.getTime() + 864e5);
+  shiftLabel.textContent = ph.active
+    ? `${sameDay ? "" : start.toLocaleDateString([], { weekday:"short" }) + " "}${clock(start)} · ${shift.hours}h`
+    : "Shift ended";
+}
+
+/* ─────────────────────────────────────────────────────── network */
 async function tick() {
   const my = ++inflight;
+  const m = effectiveMode();
   try {
-    const r = await fetch(`${WORKER_URL}?mode=${mode}`, { cache: "no-store" });
+    const r = await fetch(`${WORKER_URL}?mode=${m}`, { cache: "no-store" });
     const d = await r.json();
-    if (my !== inflight) return;          // a mode switch raced ahead of us
+    if (my !== inflight) return;
+    offline = false;
     document.body.classList.remove("stale");
+    lastData = d;
+    store.set("bxm3.last", { mode: m, at: Date.now(), data: d });
     render(d);
   } catch (e) {
     if (my !== inflight) return;
+    offline = true;
     document.body.classList.add("stale");
-    updatedEl.textContent = "reconnecting…";
+    if (lastData) render(lastData);
+    else updatedEl.textContent = "offline";
   }
 }
 
-function schedule() {
-  clearInterval(timer);
-  timer = setInterval(tick, REFRESH_MS);
-}
+// Every cycle re-reads the clock, so a phase change (pre -> on -> ret)
+// lands on its own without any extra timer.
+function schedule() { clearInterval(timer); timer = setInterval(tick, REFRESH_MS); }
 
-function setMode(next, persist = true) {
-  mode = next;
-  seg.dataset.mode = next;
-  for (const b of seg.querySelectorAll("button"))
-    b.setAttribute("aria-selected", String(b.dataset.mode === next));
-  if (persist) { try { localStorage.setItem("bxm3.mode", next); } catch (e) {} }
+function refreshNow() {
   out.style.opacity = ".45";
   tick().finally(() => { out.style.opacity = "1"; });
   schedule();
 }
 
+/* ───────────────────────────────────────────────────────── events */
 seg.addEventListener("click", e => {
-  const b = e.target.closest("button[data-mode]");
-  if (b && b.dataset.mode !== mode) setMode(b.dataset.mode);
+  const btn = e.target.closest("button[data-mode]");
+  if (!btn) return;
+  const next = btn.dataset.mode;
+  const ph = phase();
+  if (ph.active) override = { mode: next, phase: ph.name };   // manual beats the shift, this phase only
+  storedMode = next;
+  store.set("bxm3.mode", next);
+  refreshNow();
 });
-updatedEl.addEventListener("click", () => tick());
-diagEl.addEventListener("click", () => { showDiag = !showDiag; tick(); });
 
-// Resuming from the iPhone home screen should show fresh data immediately.
-document.addEventListener("visibilitychange", () => {
-  if (!document.hidden) { tick(); schedule(); }
+updatedEl.addEventListener("click", () => refreshNow());
+diagEl.addEventListener("click", () => { showDiag = !showDiag; if (lastData) render(lastData); });
+
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshNow(); });
+
+/* ──────────────────────────────────────────────────── shift sheet */
+function buildChips(selected) {
+  $("sh-hours").innerHTML = SHIFT_HOUR_CHOICES.map(h =>
+    `<button type="button" class="chip" data-h="${h}" aria-pressed="${h === selected}">${h}h</button>`).join("");
+}
+
+function openSheet() {
+  const now = new Date();
+  const base = shift ? shiftStartDate(shift) : now;
+  $("sh-date").value = `${base.getFullYear()}-${String(base.getMonth()+1).padStart(2,"0")}-${String(base.getDate()).padStart(2,"0")}`;
+  $("sh-time").value = shift ? shift.start : "07:00";
+  buildChips(shift ? shift.hours : DEFAULT_SHIFT_HOURS);
+  sheet.hidden = false;
+}
+
+const closeSheet = () => { sheet.hidden = true; };
+
+shiftBtn.addEventListener("click", openSheet);
+sheet.addEventListener("click", e => { if (e.target === sheet) closeSheet(); });
+document.addEventListener("keydown", e => { if (e.key === "Escape" && !sheet.hidden) closeSheet(); });
+
+$("sh-hours").addEventListener("click", e => {
+  const c = e.target.closest(".chip");
+  if (!c) return;
+  for (const x of $("sh-hours").querySelectorAll(".chip"))
+    x.setAttribute("aria-pressed", String(x === c));
 });
 
-setMode(mode, false);
+$("sh-save").addEventListener("click", () => {
+  const pressed = $("sh-hours").querySelector('.chip[aria-pressed="true"]');
+  const next = normalizeShift({
+    date: $("sh-date").value,
+    start: $("sh-time").value,
+    hours: pressed ? Number(pressed.dataset.h) : DEFAULT_SHIFT_HOURS,
+  });
+  if (!next) return;                 // browser validation already blocks empty inputs
+  shift = next;
+  override = null;
+  store.set("bxm3.shift", shift);
+  closeSheet();
+  refreshNow();
+});
+
+$("sh-clear").addEventListener("click", () => {
+  shift = null;
+  override = null;
+  store.del("bxm3.shift");
+  closeSheet();
+  refreshNow();
+});
+
+/* ─────────────────────────────────────────────────────── startup */
+(function boot() {
+  const cached = store.get("bxm3.last", null);
+  if (cached && cached.data) { lastData = cached.data; render(cached.data); }
+  else { paintShiftButton(); out.innerHTML = `<section class="card empty">${BUS_ICON}
+    <div class="t">Checking the stop…</div><div class="s">One moment.</div></section>`; }
+  refreshNow();
+})();
+
+if (location.protocol === "https:" && "serviceWorker" in navigator)
+  navigator.serviceWorker.register("sw.js").catch(() => {});
 </script>
 </body>
 </html>
