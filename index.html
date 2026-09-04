@@ -1,56 +1,298 @@
 <!doctype html>
 <html lang="en">
+<head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#000000">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<title>BxM3</title>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Bus">
+<title>Emily's Bus</title>
 <style>
-  body{font:18px -apple-system,system-ui,sans-serif;margin:20px;background:#111;color:#eee}
-  h1{font-size:22px;margin:0 0 4px}
-  .sub{color:#888;font-size:14px;margin-bottom:18px}
-  .bus{background:#1e1e1e;border-radius:12px;padding:14px;margin-bottom:12px}
-  .big{font-size:34px;font-weight:700}
-  .dim{color:#aaa;font-size:15px}
-  .err{color:#f66}
-</style>
-<h1>BxM3 → Midtown</h1>
-<div class="sub">Broadway / W 260 St · <span id="upd">loading…</span></div>
-<div id="list"></div>
-<script>
-const WORKER_URL = "https://bxm3.max-c2d.workers.dev"; // e.g. https://bxm3.<your-subdomain>.workers.dev
+  :root{
+    --bg:#000;
+    --card:rgba(255,255,255,.055);
+    --card-hi:rgba(255,255,255,.085);
+    --line:rgba(255,255,255,.09);
+    --fg:#f5f5f7;
+    --fg2:rgba(235,235,245,.62);
+    --fg3:rgba(235,235,245,.34);
+    --bxm3:#4c7dff;
+    --bxm2:#2fbf9b;
+    --live:#32d74b;
+    --sched:#ffb020;
+    --radius:20px;
+  }
+  *{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+  button,h1,h2,.badge,.seg{-webkit-user-select:none;user-select:none}
+  html,body{margin:0;background:var(--bg)}
+  body{
+    font:400 17px/1.4 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+    color:var(--fg);
+    -webkit-font-smoothing:antialiased;
+    padding:
+      max(14px,env(safe-area-inset-top)) max(18px,env(safe-area-inset-right))
+      max(24px,env(safe-area-inset-bottom)) max(18px,env(safe-area-inset-left));
+    max-width:520px;margin:0 auto;
+    min-height:100vh;
+    background:
+      radial-gradient(120% 60% at 50% 0%,rgba(76,125,255,.10),transparent 62%),
+      var(--bg);
+    background-attachment:fixed;
+  }
 
-const sched0 = b => b.arrive_260_scheduled ? " (sched)" : "";
-const mins = iso => iso ? Math.round((new Date(iso) - Date.now()) / 60000) : null;
-const clock = iso => new Date(iso).toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
+  header{display:flex;align-items:baseline;justify-content:space-between;gap:12px;margin:6px 0 16px}
+  h1{font:600 22px/1.2 -apple-system,system-ui,sans-serif;letter-spacing:-.02em;margin:0}
+  #updated{font-size:12.5px;color:var(--fg3);font-variant-numeric:tabular-nums;
+    background:none;border:0;padding:6px 0;font-family:inherit;cursor:pointer}
+  #updated:active{color:var(--fg2)}
+
+  /* segmented control */
+  .seg{position:relative;display:grid;grid-template-columns:1fr 1fr;gap:0;
+    background:rgba(255,255,255,.07);border-radius:13px;padding:3px;margin-bottom:20px}
+  .seg::before{content:"";position:absolute;top:3px;bottom:3px;left:3px;width:calc(50% - 3px);
+    background:rgba(255,255,255,.16);border-radius:10px;
+    box-shadow:0 1px 3px rgba(0,0,0,.4);
+    transition:transform .28s cubic-bezier(.32,.72,0,1)}
+  .seg[data-mode="home"]::before{transform:translateX(100%)}
+  .seg button{position:relative;z-index:1;appearance:none;background:none;border:0;
+    color:var(--fg2);font:590 15px/1 -apple-system,system-ui,sans-serif;
+    padding:11px 8px;border-radius:10px;cursor:pointer;transition:color .2s}
+  .seg button[aria-selected="true"]{color:var(--fg)}
+
+  .card{background:var(--card);border:.5px solid var(--line);border-radius:var(--radius);
+    padding:18px;margin-bottom:12px}
+
+  /* hero */
+  .hero .top{display:flex;align-items:center;gap:9px;margin-bottom:14px}
+  .badge{font:700 13px/1 -apple-system,system-ui,sans-serif;letter-spacing:.02em;
+    padding:6px 9px;border-radius:8px;color:#fff;flex:none}
+  .badge.bxm3{background:var(--bxm3)}
+  .badge.bxm2{background:var(--bxm2)}
+  .status{margin-left:auto;display:flex;align-items:center;gap:5px;
+    font-size:12px;font-weight:590;color:var(--fg3);flex:none}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--live)}
+  .status.sched{color:var(--sched)}
+  .status.sched .dot{background:var(--sched)}
+  @media (prefers-reduced-motion:no-preference){
+    .status:not(.sched) .dot{animation:pulse 2.4s ease-in-out infinite}
+  }
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+  .headsign{font-size:14px;color:var(--fg2);line-height:1.3;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+
+  .eta{display:flex;align-items:baseline;gap:8px;margin:2px 0 6px}
+  .eta .n{font:700 clamp(58px,19vw,80px)/.92 -apple-system,system-ui,sans-serif;
+    letter-spacing:-.045em;font-variant-numeric:tabular-nums}
+  .eta .u{font:590 19px/1 -apple-system,system-ui,sans-serif;color:var(--fg2)}
+  .prox{font-size:14.5px;color:var(--fg2);font-variant-numeric:tabular-nums}
+
+  .arrive{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+    margin-top:16px;padding-top:14px;border-top:.5px solid var(--line)}
+  .arrive .lbl{font-size:13.5px;color:var(--fg3)}
+  .arrive .val{font:600 16px/1 -apple-system,system-ui,sans-serif;
+    font-variant-numeric:tabular-nums;text-align:right;flex:none}
+  .arrive .val.na{color:var(--fg3);font-weight:400;font-size:14px}
+
+  /* upcoming rows */
+  h2{font:590 13px/1 -apple-system,system-ui,sans-serif;color:var(--fg3);
+    text-transform:uppercase;letter-spacing:.06em;margin:22px 4px 9px}
+  .row{display:flex;align-items:center;gap:12px;padding:13px 16px;
+    background:var(--card);border:.5px solid var(--line);border-radius:15px;margin-bottom:8px}
+  .row .mid{min-width:0;flex:1}
+  .row .m1{font:600 16px/1.25 -apple-system,system-ui,sans-serif;font-variant-numeric:tabular-nums}
+  .row .m2{font-size:12.5px;color:var(--fg3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row .r{font-size:13px;color:var(--fg2);font-variant-numeric:tabular-nums;text-align:right;flex:none}
+
+  /* empty / error */
+  .empty{text-align:center;padding:44px 22px}
+  .empty svg{opacity:.28;margin-bottom:16px}
+  .empty .t{font:600 17px/1.3 -apple-system,system-ui,sans-serif;margin-bottom:7px}
+  .empty .s{font-size:14.5px;color:var(--fg3);line-height:1.45}
+  .note{margin-top:10px;padding:11px 14px;border-radius:12px;
+    background:rgba(255,176,32,.10);border:.5px solid rgba(255,176,32,.22);
+    color:#ffcf7a;font-size:13.5px}
+
+  footer{margin-top:26px;text-align:center}
+  #diag{font:400 11px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+    color:rgba(235,235,245,.2);background:none;border:0;padding:8px;
+    cursor:pointer;font-variant-numeric:tabular-nums}
+  .stale body,body.stale{opacity:1}
+  body.stale .card,body.stale .row{opacity:.5;transition:opacity .3s}
+</style>
+</head>
+<body>
+
+<header>
+  <h1 id="title">Next bus</h1>
+  <button id="updated" type="button" aria-label="Refresh">…</button>
+</header>
+
+<div class="seg" id="seg" data-mode="work" role="tablist">
+  <button type="button" role="tab" data-mode="work" aria-selected="true">To work</button>
+  <button type="button" role="tab" data-mode="home" aria-selected="false">Home</button>
+</div>
+
+<main id="out" aria-live="polite"></main>
+
+<footer><button id="diag" type="button">·</button></footer>
+
+<script>
+const WORKER_URL = "https://bxm3.max-c2d.workers.dev";
+const REFRESH_MS = 30000;
+
+const seg = document.getElementById("seg");
+const out = document.getElementById("out");
+const diagEl = document.getElementById("diag");
+const updatedEl = document.getElementById("updated");
+
+let mode = "work";
+try { const m = localStorage.getItem("bxm3.mode"); if (m === "work" || m === "home") mode = m; } catch (e) {}
+
+let showDiag = false;
+let timer = null;
+let inflight = 0;
+
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c =>
+  ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+const clock = iso => new Date(iso).toLocaleTimeString([], { hour:"numeric", minute:"2-digit" });
+const mins  = iso => iso ? Math.round((new Date(iso) - Date.now()) / 60000) : null;
+
+// Headline for a boarding time: "Now" under a minute, minutes up to 90, else a clock time.
+function etaParts(b) {
+  const m = mins(b.board_time);
+  if (m === null) return { n: null, u: "", alt: b.proximity || "Tracking" };
+  if (m <= 0) return { n: "Now", u: "" };
+  if (m > 90) return { n: null, u: "", alt: "Around " + clock(b.board_time) };
+  return { n: String(m), u: m === 1 ? "min" : "min" };
+}
+
+const badge = b => `<span class="badge ${b.route_key === "BXM2" ? "bxm2" : "bxm3"}">${esc(b.route)}</span>`;
+
+function heroHTML(b) {
+  const e = etaParts(b);
+  const big = e.n !== null
+    ? `<div class="eta"><span class="n">${esc(e.n)}</span>${e.u ? `<span class="u">${e.u}</span>` : ""}</div>`
+    : `<div class="eta"><span class="n" style="font-size:34px;letter-spacing:-.02em">${esc(e.alt)}</span></div>`;
+
+  const bits = [];
+  if (b.proximity) bits.push(esc(b.proximity));
+  if (b.stops_away !== null && b.stops_away !== undefined)
+    bits.push(b.stops_away === 1 ? "1 stop away" : b.stops_away + " stops away");
+  if (b.vehicle) bits.push("Bus #" + esc(b.vehicle));
+
+  const sched = b.board_scheduled;
+  const arrival = b.target_found && b.target_time
+    ? `<span class="val">${clock(b.target_time)}${b.target_scheduled ? " · sched" : ""}</span>`
+    : `<span class="val na">estimate unavailable</span>`;
+
+  return `<section class="card hero">
+    <div class="top">${badge(b)}
+      <span class="headsign">${esc(b.dest) || "&nbsp;"}</span>
+      <span class="status ${sched ? "sched" : ""}"><span class="dot"></span>${sched ? "Scheduled" : "Live"}</span>
+    </div>
+    ${big}
+    <div class="prox">${bits.join(" · ") || "&nbsp;"}</div>
+    <div class="arrive">
+      <span class="lbl">Arrives ${esc(b.target_label || "destination")}</span>
+      ${arrival}
+    </div>
+  </section>`;
+}
+
+function rowHTML(b) {
+  const e = etaParts(b);
+  const head = e.n !== null ? `${esc(e.n)}${e.u ? " " + e.u : ""}` : esc(e.alt);
+  const sub = [b.proximity, b.vehicle ? "#" + b.vehicle : null].filter(Boolean).map(esc).join(" · ");
+  const right = b.target_found && b.target_time ? clock(b.target_time) : "—";
+  return `<div class="row">${badge(b)}
+    <div class="mid"><div class="m1">${head}${b.board_scheduled ? ' <span style="color:var(--sched);font-size:12px;font-weight:400">sched</span>' : ""}</div>
+    <div class="m2">${sub || esc(b.dest)}</div></div>
+    <div class="r">${right}</div></div>`;
+}
+
+const BUS_ICON = `<svg width="46" height="46" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+  stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M4 16V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v10"/><path d="M4 11h16"/>
+  <path d="M3 16h18"/><circle cx="7.5" cy="18.5" r="1.5"/><circle cx="16.5" cy="18.5" r="1.5"/>
+  <path d="M6 7h5"/></svg>`;
+
+function emptyHTML(d) {
+  const routes = (d.routes || []).join(" or ");
+  return `<section class="card empty">${BUS_ICON}
+    <div class="t">No ${esc(routes)} tracked right now</div>
+    <div class="s">Nothing is reporting live at ${esc(d.stop_name || "your stop")}.<br>
+    Checking again every ${REFRESH_MS / 1000} seconds.</div>
+    ${d.error ? `<div class="note">${esc(d.error)}</div>` : ""}
+  </section>`;
+}
+
+function render(d) {
+  document.getElementById("title").textContent =
+    d.mode === "home" ? "Next bus home" : "Next bus to work";
+
+  const buses = d.buses || [];
+  out.innerHTML = buses.length
+    ? heroHTML(buses[0]) +
+      (buses.length > 1
+        ? `<h2>Then</h2>` + buses.slice(1, 4).map(rowHTML).join("")
+        : "")
+    : emptyHTML(d);
+
+  updatedEl.textContent = d.updated ? "updated " + clock(d.updated) : "no data";
+
+  const g = d.diagnostics || {};
+  diagEl.textContent = showDiag
+    ? `mode=${d.mode} stop=${d.stop} visits=${g.raw_visit_count ?? "-"} ` +
+      `vehicles=${g.raw_vehicle_count ?? "-"} src=${d.source ?? "-"}`
+    : "·";
+}
 
 async function tick() {
+  const my = ++inflight;
   try {
-    const s = await (await fetch(WORKER_URL)).json();
-    document.getElementById("upd").textContent =
-      "updated " + (s.updated ? clock(s.updated) : "never");
-    const list = document.getElementById("list");
-    if (!s.buses.length) {
-      list.innerHTML = '<div class="bus">No buses tracked</div>' +
-        (s.error ? `<div class="err">${s.error}</div>` : "");
-      return;
-    }
-    list.innerHTML = s.buses.map(b => {
-      const m260 = mins(b.arrive_260), m78 = mins(b.arrive_78);
-      const top = m260 !== null ? `${m260} min${sched0(b)}` : b.proximity;
-      const sub = b.proximity + (b.stops_away !== null ? ` · ${b.stops_away} stops away` : "");
-      const sched = k => b[k] ? " (scheduled)" : "";
-      const eta = b.arrive_78
-        ? `78th St ≈ ${clock(b.arrive_78)} (${m78} min)${sched("arrive_78_scheduled")}`
-        : "78th St ETA n/a";
-      return `<div class="bus"><div class="big">${top}</div>` +
-             `<div class="dim">${sub}</div><div class="dim">${eta}</div>` +
-             `<div class="dim">bus #${b.vehicle} → ${b.dest}</div></div>`;
-    }).join("");
+    const r = await fetch(`${WORKER_URL}?mode=${mode}`, { cache: "no-store" });
+    const d = await r.json();
+    if (my !== inflight) return;          // a mode switch raced ahead of us
+    document.body.classList.remove("stale");
+    render(d);
   } catch (e) {
-    document.getElementById("upd").textContent = "fetch failed";
+    if (my !== inflight) return;
+    document.body.classList.add("stale");
+    updatedEl.textContent = "reconnecting…";
   }
 }
-tick();
-setInterval(tick, 30000);
+
+function schedule() {
+  clearInterval(timer);
+  timer = setInterval(tick, REFRESH_MS);
+}
+
+function setMode(next, persist = true) {
+  mode = next;
+  seg.dataset.mode = next;
+  for (const b of seg.querySelectorAll("button"))
+    b.setAttribute("aria-selected", String(b.dataset.mode === next));
+  if (persist) { try { localStorage.setItem("bxm3.mode", next); } catch (e) {} }
+  out.style.opacity = ".45";
+  tick().finally(() => { out.style.opacity = "1"; });
+  schedule();
+}
+
+seg.addEventListener("click", e => {
+  const b = e.target.closest("button[data-mode]");
+  if (b && b.dataset.mode !== mode) setMode(b.dataset.mode);
+});
+updatedEl.addEventListener("click", () => tick());
+diagEl.addEventListener("click", () => { showDiag = !showDiag; tick(); });
+
+// Resuming from the iPhone home screen should show fresh data immediately.
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) { tick(); schedule(); }
+});
+
+setMode(mode, false);
 </script>
+</body>
 </html>

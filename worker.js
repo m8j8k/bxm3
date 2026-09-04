@@ -1,23 +1,74 @@
-// Cloudflare Worker: BxM3 bus board for Emily.
-// Hides the MTA key, adds CORS, and projects Broadway/W 260 St -> 5 Av/E 78 St.
+// Cloudflare Worker: Emily's BxM2/BxM3 commute board.
 //
-// Secret: MTA_KEY  (never echoed in any response)
+//   ?mode=work  Broadway/W 260 St  -> 5 Av/E 78 St      (BxM3, Midtown-bound)
+//   ?mode=home  Madison Av/E 80 St -> Riverdale/Yonkers (BxM2 + BxM3)
+//
+// Secret: MTA_KEY. It is never echoed in any response, and no request URL
+// (which carries the key) is ever included in output.
 
-const STOP = "100609";           // BROADWAY/W 260 ST, Midtown-bound side
-const DEST_STOP = "404303";      // 5 AV/E 78 ST
-const LINE = "MTABC_BXM3";
-const DEST = "5 AV/E 78 ST";
 const CACHE_S = 25;
 
-let cache = { t: 0, body: null };
+const MODES = {
+  work: {
+    label: "To work",
+    stop: "100609",
+    stop_name: "Broadway / W 260 St",
+    routes: ["BXM3"],
+    // 100609 is the Midtown-only side of the corner (100594 is the Yonkers
+    // side), so a bus reported here is already direction-correct. We still
+    // positively exclude return-trip headsigns.
+    reject: /YONKERS|RIVERDALE|GETTY/,
+    direction_ref: "1",
+    legacy_fields: true,
+    targets: {
+      BXM3: {
+        ids: ["404303"],
+        names: ["5 AV/E 78 ST"],
+        label: "5 Av / E 78 St",
+      },
+    },
+  },
+  home: {
+    label: "Home",
+    stop: "450543",
+    stop_name: "Madison Av / E 80 St",
+    routes: ["BXM2", "BXM3"],
+    // Madison Av runs uptown, so this stop serves the Bronx-bound trips.
+    // Anything still signed for Midtown is laying over or wrong-direction.
+    reject: /MIDTOWN/,
+    direction_ref: null,
+    targets: {
+      BXM3: {
+        ids: ["100594"],
+        names: ["BROADWAY/W 260 ST"],
+        label: "Broadway / W 260 St",
+      },
+      BXM2: {
+        ids: ["100464", "100466", "100467"],
+        names: [
+          "RIVERDALE AV/W 259 ST",
+          "RIVERDALE AV/W 261 ST",
+          "RIVERDALE AV/W 263 ST",
+        ],
+        label: "Riverdale Av / W 259–263 St",
+      },
+    },
+  },
+};
+
+const DEFAULT_MODE = "work";
+const LINE_REF = { BXM2: "MTABC_BXM2", BXM3: "MTABC_BXM3" };
+const PRETTY = { BXM2: "BxM2", BXM3: "BxM3" };
+
+const cache = new Map();
 
 const api = (path, params) =>
   "https://bustime.mta.info/api/siri/" + path + ".json?" + new URLSearchParams(params);
 
 // ---------------------------------------------------------------- helpers
 
-// SIRI v2 JSON is inconsistent: a "name" field can be a plain string, a number,
-// an array of natural-language strings, or an object like {content, lang}.
+// SIRI v2 JSON is inconsistent: a field can be a plain string, a number, an
+// array of natural-language strings, or an object like {content, lang}.
 // text() flattens any of those into a plain string.
 const text = (v) => {
   if (v == null) return "";
@@ -38,6 +89,7 @@ const text = (v) => {
 };
 
 const up = (v) => text(v).toUpperCase();
+const norm = (v) => up(v).replace(/[^A-Z0-9]/g, "");
 
 // Some deliveries come back as a bare object instead of a one-element array.
 const arr = (v) => (Array.isArray(v) ? v : v == null ? [] : [v]);
@@ -51,41 +103,40 @@ const stopIdMatches = (value, id) => {
 };
 
 const stopNameMatches = (value, name) => {
-  const a = up(value).replace(/[^A-Z0-9]/g, "");
-  const b = name.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  return a !== "" && a === b;
+  const a = norm(value);
+  return a !== "" && a === norm(name);
 };
 
-// BxM3 via PublishedLineName or LineRef ("MTABC_BXM3", "BxM3", ...).
-const routeMatches = (j) => {
-  const s = [j.PublishedLineName, j.LineRef, j.JourneyPatternRef]
-    .map(up)
-    .join(" ")
-    .replace(/[^A-Z0-9]/g, "");
-  return s.includes("BXM3");
+// Which of the mode's allowed routes is this journey, if any?
+const routeOf = (j, allowed) => {
+  const published = norm(j.PublishedLineName);
+  for (const r of allowed) if (published === r) return r;
+  const lineRef = norm(j.LineRef);
+  for (const r of allowed) if (lineRef.endsWith(r)) return r;
+  for (const r of allowed) if (published.endsWith(r) || lineRef.includes(r)) return r;
+  return null;
 };
 
-// Direction. Stop 100609 is the Midtown-bound side of Broadway/W 260 St
-// (100594 is the Yonkers side), so a bus reported AT this stop is already
-// direction-correct. We therefore only need to positively exclude Yonkers
-// headsigns; an unrecognised headsign is not treated as wrong-direction.
-const midtownMatches = (j) => {
+const directionOk = (j, cfg) => {
   const s = [j.DestinationName, j.DirectionName, j.DestinationRef, j.PublishedLineName]
     .map(up)
     .join(" ");
-  if (/YONKERS/.test(s)) return false;
-  return true;
+  return !cfg.reject.test(s);
 };
 
+// Number("") === 0, so an absent field must be rejected before coercion -
+// otherwise a missing stop count is reported as a confident "0 stops away".
 const numOrNull = (v) => {
-  const n = Number(text(v));
+  const s = text(v).trim();
+  if (s === "") return null;
+  const n = Number(s);
   return Number.isFinite(n) ? n : null;
 };
 
 const distances = (call) => call?.Extensions?.Distances ?? {};
 
-// Real-time values first; fall back to the timetable only as a last resort,
-// and report which one was used so the UI can label scheduled times honestly.
+// Real-time first; fall back to the timetable only as a last resort, and
+// report which was used so the UI can label scheduled times honestly.
 const firstTime = (call) => {
   const live = call?.ExpectedArrivalTime ?? call?.ExpectedDepartureTime ?? null;
   if (live) return { time: live, scheduled: false };
@@ -94,23 +145,48 @@ const firstTime = (call) => {
   return { time: null, scheduled: false };
 };
 
-const normalizeBus = (j, boardingCall, targetCall, source) => ({
-  vehicle: (text(j.VehicleRef) || "?").split("_").pop(),
-  line: text(j.PublishedLineName) || text(j.LineRef).split("_").pop(),
-  dest: text(j.DestinationName),
-  proximity:
-    text(distances(boardingCall).PresentableDistance) ||
-    text(boardingCall?.ArrivalProximityText) ||
-    "",
-  stops_away:
-    numOrNull(distances(boardingCall).StopsFromCall) ??
-    numOrNull(boardingCall?.NumberOfStopsAway),
-  arrive_260: firstTime(boardingCall).time,
-  arrive_260_scheduled: firstTime(boardingCall).scheduled,
-  arrive_78: firstTime(targetCall).time,
-  arrive_78_scheduled: firstTime(targetCall).scheduled,
-  source,
-});
+const onwardCalls = (j) => arr(j?.OnwardCalls?.OnwardCall);
+
+const matchesTarget = (call, spec) =>
+  spec.ids.some((id) => stopIdMatches(call.StopPointRef, id)) ||
+  spec.names.some((n) => stopNameMatches(call.StopPointName, n));
+
+const findTarget = (calls, spec, afterIdx = -1) => {
+  if (!spec) return null;
+  const i = calls.findIndex((c, idx) => idx > afterIdx && matchesTarget(c, spec));
+  return i < 0 ? null : calls[i];
+};
+
+function normalizeBus(j, routeKey, boardingCall, targetCall, spec, source) {
+  const board = firstTime(boardingCall);
+  const target = firstTime(targetCall);
+  return {
+    route: PRETTY[routeKey] ?? routeKey,
+    route_key: routeKey,
+    vehicle: (text(j.VehicleRef) || "").split("_").pop() || null,
+    dest: text(j.DestinationName),
+    proximity:
+      text(distances(boardingCall).PresentableDistance) ||
+      text(boardingCall?.ArrivalProximityText) ||
+      "",
+    stops_away:
+      numOrNull(distances(boardingCall).StopsFromCall) ??
+      numOrNull(boardingCall?.NumberOfStopsAway),
+    board_time: board.time,
+    board_scheduled: board.scheduled,
+    target_time: target.time,
+    target_scheduled: target.scheduled,
+    target_found: !!targetCall,
+    target_label: spec?.label ?? null,
+    source,
+  };
+}
+
+const byBoardTime = (a, b) => {
+  if (!a.board_time) return 1;
+  if (!b.board_time) return -1;
+  return new Date(a.board_time) - new Date(b.board_time);
+};
 
 const errorText = (data, delivery) => {
   const e =
@@ -129,22 +205,15 @@ async function fetchJson(url) {
   return await r.json();
 }
 
-const onwardCalls = (j) => arr(j?.OnwardCalls?.OnwardCall);
-
-const findTargetCall = (calls) =>
-  calls.find(
-    (c) => stopIdMatches(c.StopPointRef, DEST_STOP) || stopNameMatches(c.StopPointName, DEST)
-  ) ?? null;
-
 // ------------------------------------------------------- StopMonitoring
 
-async function stopMonitoring(env) {
+async function stopMonitoring(env, cfg) {
   const data = await fetchJson(
     api("stop-monitoring", {
       key: env.MTA_KEY,
       version: "2",
       OperatorRef: "MTA",
-      MonitoringRef: STOP,
+      MonitoringRef: cfg.stop,
       StopMonitoringDetailLevel: "calls",
       MaximumNumberOfCallsOnwards: "60",
     })
@@ -153,106 +222,112 @@ async function stopMonitoring(env) {
   const delivery = arr(data?.Siri?.ServiceDelivery?.StopMonitoringDelivery)[0];
   const visits = arr(delivery?.MonitoredStopVisit);
   const rejected = { route: 0, direction: 0 };
+  const buses = [];
 
-  const buses = visits
-    .map((v) => {
-      const j = v.MonitoredVehicleJourney ?? {};
-      if (!routeMatches(j)) {
-        rejected.route++;
-        return null;
-      }
-      if (!midtownMatches(j)) {
-        rejected.direction++;
-        return null;
-      }
-      return normalizeBus(
+  for (const v of visits) {
+    const j = v.MonitoredVehicleJourney ?? {};
+    const routeKey = routeOf(j, cfg.routes);
+    if (!routeKey) {
+      rejected.route++;
+      continue;
+    }
+    if (!directionOk(j, cfg)) {
+      rejected.direction++;
+      continue;
+    }
+    const spec = cfg.targets[routeKey];
+    buses.push(
+      normalizeBus(
         j,
+        routeKey,
         j.MonitoredCall ?? {},
-        findTargetCall(onwardCalls(j)),
+        findTarget(onwardCalls(j), spec),
+        spec,
         "stop"
-      );
-    })
-    .filter(Boolean);
+      )
+    );
+  }
 
   return {
-    buses,
+    buses: buses.sort(byBoardTime),
     error: errorText(data, delivery),
     raw_visit_count: visits.length,
     rejected,
-    samples: visits.slice(0, 3).map((v) => sample(v.MonitoredVehicleJourney ?? {})),
+    samples: visits.slice(0, 3).map((v) => sample(v.MonitoredVehicleJourney ?? {}, cfg)),
   };
 }
 
 // ---------------------------------------------------- VehicleMonitoring
 
-async function vehicleMonitoring(env) {
-  const data = await fetchJson(
-    api("vehicle-monitoring", {
+async function vehicleMonitoring(env, cfg) {
+  const rejected = { route: 0, direction: 0, no_boarding_stop: 0, no_target_stop: 0 };
+  const buses = [];
+  const samples = [];
+  let raw = 0;
+  let error = null;
+
+  for (const routeKey of cfg.routes) {
+    const params = {
       key: env.MTA_KEY,
       version: "2",
       OperatorRef: "MTA",
-      LineRef: LINE,
-      DirectionRef: "1",
+      LineRef: LINE_REF[routeKey],
       VehicleMonitoringDetailLevel: "calls",
       MaximumStopVisits: "10",
       MaximumNumberOfCallsOnwards: "60",
-    })
-  );
+    };
+    if (cfg.direction_ref) params.DirectionRef = cfg.direction_ref;
 
-  const delivery = arr(data?.Siri?.ServiceDelivery?.VehicleMonitoringDelivery)[0];
-  const activities = arr(delivery?.VehicleActivity);
-  const rejected = { route: 0, direction: 0, no_boarding_stop: 0, no_target_stop: 0 };
+    const data = await fetchJson(api("vehicle-monitoring", params));
+    const delivery = arr(data?.Siri?.ServiceDelivery?.VehicleMonitoringDelivery)[0];
+    const activities = arr(delivery?.VehicleActivity);
+    raw += activities.length;
+    error = error ?? errorText(data, delivery);
+    for (const a of activities.slice(0, 2)) samples.push(sample(a.MonitoredVehicleJourney ?? {}, cfg));
 
-  const buses = activities
-    .map((a) => {
+    for (const a of activities) {
       const j = a.MonitoredVehicleJourney ?? {};
-      if (!routeMatches(j)) {
+      if (routeOf(j, [routeKey]) !== routeKey) {
         rejected.route++;
-        return null;
+        continue;
       }
-      if (!midtownMatches(j)) {
+      if (!directionOk(j, cfg)) {
         rejected.direction++;
-        return null;
+        continue;
       }
 
       const calls = onwardCalls(j);
-      const boardingIdx = calls.findIndex((c) => stopIdMatches(c.StopPointRef, STOP));
+      const boardingIdx = calls.findIndex((c) => stopIdMatches(c.StopPointRef, cfg.stop));
       if (boardingIdx < 0) {
         rejected.no_boarding_stop++;
-        return null;
+        continue;
       }
-      // 78th St must still be ahead of Emily's stop on this vehicle's path.
-      const targetIdx = calls.findIndex(
-        (c, i) =>
-          i > boardingIdx &&
-          (stopIdMatches(c.StopPointRef, DEST_STOP) || stopNameMatches(c.StopPointName, DEST))
-      );
-      if (targetIdx < 0) {
+      // The target must still be ahead of Emily's boarding stop on this
+      // vehicle's remaining path - that also guarantees direction.
+      const spec = cfg.targets[routeKey];
+      const targetCall = findTarget(calls, spec, boardingIdx);
+      if (!targetCall) {
         rejected.no_target_stop++;
-        return null;
+        continue;
       }
 
-      return normalizeBus(j, calls[boardingIdx], calls[targetIdx], "route");
-    })
-    .filter(Boolean);
+      buses.push(normalizeBus(j, routeKey, calls[boardingIdx], targetCall, spec, "route"));
+    }
+  }
 
-  return {
-    buses,
-    error: errorText(data, delivery),
-    raw_vehicle_count: activities.length,
-    rejected,
-    samples: activities.slice(0, 3).map((a) => sample(a.MonitoredVehicleJourney ?? {})),
-  };
+  return { buses: buses.sort(byBoardTime), error, raw_vehicle_count: raw, rejected, samples };
 }
 
 // ------------------------------------------------------------ diagnostics
-// Field-shape sample. Contains only MTA feed values - never the key or URL.
+// Field-shape sample: only MTA feed values, never the key or a request URL.
 const shape = (v) =>
   v == null ? "null" : Array.isArray(v) ? "array[" + v.length + "]" : typeof v;
 
-function sample(j) {
+function sample(j, cfg) {
   const mc = j.MonitoredCall ?? {};
   const calls = onwardCalls(j);
+  const routeKey = routeOf(j, cfg.routes);
+  const target = routeKey ? findTarget(calls, cfg.targets[routeKey]) : null;
   return {
     LineRef: { shape: shape(j.LineRef), text: text(j.LineRef) },
     PublishedLineName: { shape: shape(j.PublishedLineName), text: text(j.PublishedLineName) },
@@ -260,20 +335,13 @@ function sample(j) {
     DirectionRef: text(j.DirectionRef),
     VehicleRef: text(j.VehicleRef),
     MonitoredCall_StopPointRef: text(mc.StopPointRef),
-    MonitoredCall_StopPointName: {
-      shape: shape(mc.StopPointName),
-      text: text(mc.StopPointName),
-    },
+    MonitoredCall_StopPointName: { shape: shape(mc.StopPointName), text: text(mc.StopPointName) },
+    MonitoredCall_Distances: mc?.Extensions?.Distances ?? null,
+    MonitoredCall_NumberOfStopsAway: shape(mc?.NumberOfStopsAway),
     onward_call_count: calls.length,
-    onward_first_3: calls
-      .slice(0, 3)
-      .map((c) => text(c.StopPointRef) + " | " + text(c.StopPointName)),
-    target_call: (() => {
-      const c = findTargetCall(calls);
-      return c ? text(c.StopPointRef) + " | " + text(c.StopPointName) : null;
-    })(),
-    route_ok: routeMatches(j),
-    direction_ok: midtownMatches(j),
+    route_key: routeKey,
+    direction_ok: directionOk(j, cfg),
+    target_call: target ? text(target.StopPointRef) + " | " + text(target.StopPointName) : null,
   };
 }
 
@@ -287,58 +355,83 @@ export default {
       "Cache-Control": "no-store",
     };
 
-    const debug = new URL(request.url).searchParams.get("debug") === "1";
-    const now = Date.now();
+    const params = new URL(request.url).searchParams;
+    const requested = (params.get("mode") ?? DEFAULT_MODE).toLowerCase();
+    const modeKey = MODES[requested] ? requested : DEFAULT_MODE;
+    const cfg = MODES[modeKey];
+    const debug = params.get("debug") === "1";
 
-    if (!debug && cache.body && now - cache.t < CACHE_S * 1000) {
-      return new Response(cache.body, { headers: cors });
+    const now = Date.now();
+    const hit = cache.get(modeKey);
+    if (!debug && hit && now - hit.t < CACHE_S * 1000) {
+      return new Response(hit.body, { headers: cors });
     }
 
     let out;
 
     try {
-      const stop = await stopMonitoring(env);
+      const stop = await stopMonitoring(env, cfg);
       let buses = stop.buses;
       let route = null;
 
       if (!buses.length) {
-        route = await vehicleMonitoring(env);
+        route = await vehicleMonitoring(env, cfg);
         buses = route.buses;
       }
 
       const body = {
         updated: new Date().toISOString(),
+        mode: modeKey,
+        mode_label: cfg.label,
+        stop: cfg.stop,
+        stop_name: cfg.stop_name,
+        routes: cfg.routes.map((r) => PRETTY[r] ?? r),
         buses,
         error: stop.error ?? route?.error ?? null,
-        raw_visit_count: stop.raw_visit_count,
-        raw_vehicle_count: route?.raw_vehicle_count ?? null,
-        stop: STOP,
-        dest_stop: DEST_STOP,
-        line: LINE,
-        target_stop: DEST,
         source: buses.length ? buses[0].source : null,
+        diagnostics: {
+          raw_visit_count: stop.raw_visit_count,
+          raw_vehicle_count: route?.raw_vehicle_count ?? null,
+          stop_rejected: stop.rejected,
+          vehicle_rejected: route?.rejected ?? null,
+        },
       };
+
+      // Back-compat for any home-screen copy still running the old page.
+      if (cfg.legacy_fields) {
+        body.raw_visit_count = stop.raw_visit_count;
+        body.raw_vehicle_count = route?.raw_vehicle_count ?? null;
+        body.dest_stop = cfg.targets.BXM3.ids[0];
+        body.line = LINE_REF.BXM3;
+        body.target_stop = cfg.targets.BXM3.names[0];
+        for (const b of body.buses) {
+          b.arrive_260 = b.board_time;
+          b.arrive_260_scheduled = b.board_scheduled;
+          b.arrive_78 = b.target_time;
+          b.arrive_78_scheduled = b.target_scheduled;
+          b.line = b.route;
+        }
+      }
 
       if (debug) {
         body.debug = {
-          stop_rejected: stop.rejected,
           stop_samples: stop.samples,
-          vehicle_rejected: route?.rejected ?? null,
           vehicle_samples: route?.samples ?? null,
         };
       }
 
       out = JSON.stringify(body);
-      if (!debug) cache = { t: now, body: out };
+      if (!debug) cache.set(modeKey, { t: now, body: out });
     } catch (e) {
       out = JSON.stringify({
         updated: null,
+        mode: modeKey,
+        mode_label: cfg.label,
+        stop: cfg.stop,
+        stop_name: cfg.stop_name,
+        routes: cfg.routes.map((r) => PRETTY[r] ?? r),
         buses: [],
         error: String(e && e.message ? e.message : e),
-        stop: STOP,
-        dest_stop: DEST_STOP,
-        line: LINE,
-        target_stop: DEST,
         source: null,
       });
     }
